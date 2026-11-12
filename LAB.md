@@ -2,9 +2,17 @@
 
 ## The situation
 
-Every short link Clippy ever created lives in one PostgreSQL database on one machine in one building. If that machine dies, if the building loses power, if AWS has to patch the host, Clippy is down and nobody can say for how long. Worse, if the disk is lost, so is every link.
+```text
+GAME DAY - Clippy database                       scenario: "lose a data center"
+Setup    : one PostgreSQL machine, one building, every short link ever created
+Parts 1-2: build the database the way production needs it
+           private, encrypted, backed up, Multi-AZ
+Part 3   : inspect what you built
+Part 4   : pull the plug yourself (a reboot with failover) and measure
+Debrief  : what changed for the app, and what did not
+```
 
-You will build the database the way production needs it: **private** (no address on the internet), **encrypted**, **backed up** and **Multi-AZ**, which means AWS keeps a second copy in a second data center and promotes it by itself when the first one fails. Then you will cause the failure yourself and measure what changes, and what does not.
+If that one machine dies, or the building loses power, or AWS patches the host, Clippy is down for an unknown time, and a lost disk means every link is lost. **Multi-AZ** keeps a second copy in a second data center and promotes it by itself when the first fails. A game day is a rehearsal: you cause the failure on purpose, while it is cheap and nobody is hurt.
 
 > **Your mission**
 > - Create the network pieces: a DB subnet group over two zones, and a security group that lets **only the app tier** reach port 5432
@@ -86,7 +94,7 @@ Note the zone, the standby zone and the **IP address** behind the endpoint name.
 
 ---
 
-## Part 4 - Cause the failure
+## Part 4 - Game day: cause the failure
 
 Write down the zone and the IP, then force a failover (this simulates losing the primary's data center):
 
