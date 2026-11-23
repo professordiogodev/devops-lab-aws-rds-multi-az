@@ -32,6 +32,8 @@ If that one machine dies, or the building loses power, or AWS patches the host, 
 ./setup.sh
 ```
 
+You share this AWS account (and its default VPC) with your classmates, so every name in this lab ends with **your handle**: run `./.lab/handle.sh` to see it. Below it is written `<handle>`; the security group you just made is `clippy-app-<handle>`.
+
 2. In the **RDS console** click *Create database* and walk through every section without finishing it: engine, templates (Production / Dev-Test / Free tier), availability, storage, connectivity, encryption, backup, maintenance. Decide what you would choose and why. Then cancel. You will build it with the CLI next, which makes every choice explicit.
 
 > **Think** The template "Free tier" and the template "Production" change many defaults at once (Multi-AZ, public access, backup retention, deletion protection). Why is it dangerous to start from a template without reading what it changed?
@@ -40,15 +42,15 @@ If that one machine dies, or the building loses power, or AWS patches the host, 
 
 ## Part 1 - The network around the database
 
-1. **DB subnet group** `clippy-db`: the subnets of your default VPC (it must cover **at least two availability zones**, or RDS refuses).
+1. **DB subnet group** `clippy-db-<handle>`: the subnets of your default VPC (it must cover **at least two availability zones**, or RDS refuses).
 
 ```bash
 VPC=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
 aws ec2 describe-subnets --filters Name=vpc-id,Values=$VPC --query 'Subnets[].[SubnetId,AvailabilityZone]' --output text
-aws rds create-db-subnet-group --db-subnet-group-name clippy-db --db-subnet-group-description "Clippy database" --subnet-ids <ids> --tags Key=lab,Value=aws-rds-multi-az
+aws rds create-db-subnet-group --db-subnet-group-name clippy-db-<handle> --db-subnet-group-description "Clippy database" --subnet-ids <ids> --tags Key=lab,Value=aws-rds-multi-az Key=student,Value=<handle>
 ```
 
-2. **Security group** `clippy-db` in the same VPC, tagged `lab = aws-rds-multi-az`, with **one** inbound rule: TCP 5432 whose source is the **security group `clippy-app`** (not a CIDR, and not `0.0.0.0/0`).
+2. **Security group** `clippy-db-<handle>` in the same VPC, tagged `lab = aws-rds-multi-az` and `student = <handle>`, with **one** inbound rule: TCP 5432 whose source is the **security group `clippy-app-<handle>`** (not a CIDR, and not `0.0.0.0/0`).
 
 > **Think** In production the app servers change all the time (new instances, new IPs). What does referencing a security group instead of an address buy you?
 
@@ -56,7 +58,7 @@ aws rds create-db-subnet-group --db-subnet-group-name clippy-db --db-subnet-grou
 
 ## Part 2 - The database
 
-Create the instance `clippy-db` with the CLI. Every option below is a decision:
+Create the instance `clippy-db-<handle>` with the CLI. Every option below is a decision:
 
 | Decision | Value |
 |----------|-------|
@@ -68,12 +70,12 @@ Create the instance `clippy-db` with the CLI. Every option below is a decision:
 | subnets / firewall | the subnet group and security group above |
 | backups | **7 days** retention |
 | master user | `clippy`, with `--manage-master-user-password` (AWS generates it and keeps it in Secrets Manager: it never appears in your shell history, your repository or this lab) |
-| tag | `lab = aws-rds-multi-az` |
+| tag | `lab = aws-rds-multi-az` and `student = <handle>` |
 
 Find the command with `aws rds create-db-instance help`. Do not put a password in any file.
 
 ```bash
-aws rds wait db-instance-available --db-instance-identifier clippy-db     # about 15 minutes
+aws rds wait db-instance-available --db-instance-identifier clippy-db-<handle>     # about 15 minutes
 ```
 
 While you wait, read about what Multi-AZ actually does: it is **synchronous replication** to a standby you cannot connect to, not a read replica.
@@ -85,7 +87,7 @@ While you wait, read about what Multi-AZ actually does: it is **synchronous repl
 ## Part 3 - Look at what you built
 
 ```bash
-aws rds describe-db-instances --db-instance-identifier clippy-db \
+aws rds describe-db-instances --db-instance-identifier clippy-db-<handle> \
   --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone,SecondaryAvailabilityZone,MultiAZ,StorageEncrypted,PubliclyAccessible,BackupRetentionPeriod,Endpoint.Address]' --output text
 python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" <the endpoint address>
 ```
@@ -99,19 +101,19 @@ Note the zone, the standby zone and the **IP address** behind the endpoint name.
 Write down the zone and the IP, then force a failover (this simulates losing the primary's data center):
 
 ```bash
-aws rds reboot-db-instance --db-instance-identifier clippy-db --force-failover
+aws rds reboot-db-instance --db-instance-identifier clippy-db-<handle> --force-failover
 ```
 
 Watch it, every ten seconds, until it is `available` again:
 
 ```bash
-while true; do date +%T; aws rds describe-db-instances --db-instance-identifier clippy-db --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone]' --output text; sleep 10; done
+while true; do date +%T; aws rds describe-db-instances --db-instance-identifier clippy-db-<handle> --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone]' --output text; sleep 10; done
 ```
 
 Then read the events and look at the endpoint again:
 
 ```bash
-aws rds describe-events --source-identifier clippy-db --source-type db-instance --duration 60 --query 'Events[].[Date,Message]' --output text
+aws rds describe-events --source-identifier clippy-db-<handle> --source-type db-instance --duration 60 --query 'Events[].[Date,Message]' --output text
 python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" <the endpoint address>
 ```
 
@@ -138,7 +140,7 @@ It reads the real database (Multi-AZ, encrypted, private, 7 days of backups, man
 - Create a **read replica** in the other zone and compare what it does with what the Multi-AZ standby does. Which one can serve queries? Which one survives a failure of the primary without any action?
 - Take a manual **snapshot**, delete the database, and restore it into a new instance. How long did that take compared with the failover?
 - Turn on **Performance Insights** or **enhanced monitoring** and find the failover in the graphs.
-- Connect from a server that uses the `clippy-app` security group and run `psql` with the password from Secrets Manager.
+- Connect from a server that uses the `clippy-app-<handle>` security group and run `psql` with the password from Secrets Manager.
 
 <!-- teardown:start (generated by labs.py, do not edit) -->
 ## Tear down (mandatory)

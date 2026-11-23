@@ -22,7 +22,7 @@
 
 ## 🎬 The situation
 
-<p align="center"><img src="assets/gifs/situation.gif" width="300" alt="Traffic switching from a failed primary database to its standby"></p>
+<p align="center"><img src="assets/gifs/situation.gif?v=d4e48188" width="300" alt="Traffic switching from a failed primary database to its standby"></p>
 
 ```text
 GAME DAY - Clippy database                       scenario: "lose a data center"
@@ -55,6 +55,8 @@ If that one machine dies, or the building loses power, or AWS patches the host, 
 ./setup.sh
 ```
 
+You share this AWS account (and its default VPC) with your classmates, so every name in this lab ends with **your handle**: run `./.lab/handle.sh` to see it. Below it is written `<handle>`; the security group you just made is `clippy-app-<handle>`.
+
 2. In the **RDS console** click *Create database* and walk through every section without finishing it: engine, templates (Production / Dev-Test / Free tier), availability, storage, connectivity, encryption, backup, maintenance. Decide what you would choose and why. Then cancel. You will build it with the CLI next, which makes every choice explicit.
 
 > [!NOTE]
@@ -64,17 +66,17 @@ If that one machine dies, or the building loses power, or AWS patches the host, 
 
 ## Part 1 - The network around the database
 
-<p align="center"><img src="assets/gifs/recon.gif" width="640" alt="Terminal recording: the clippy-app security group in place, no database yet, and verify.sh failing because clippy-db does not exist"></p>
+<p align="center"><img src="assets/gifs/recon.gif?v=bf27144a" width="640" alt="Terminal recording: the clippy-app security group in place, no database yet, and verify.sh failing because clippy-db-&lt;handle&gt; does not exist"></p>
 
-1. **DB subnet group** `clippy-db`: the subnets of your default VPC (it must cover **at least two availability zones**, or RDS refuses).
+1. **DB subnet group** `clippy-db-<handle>`: the subnets of your default VPC (it must cover **at least two availability zones**, or RDS refuses).
 
 ```bash
 VPC=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
 aws ec2 describe-subnets --filters Name=vpc-id,Values=$VPC --query 'Subnets[].[SubnetId,AvailabilityZone]' --output text
-aws rds create-db-subnet-group --db-subnet-group-name clippy-db --db-subnet-group-description "Clippy database" --subnet-ids <ids> --tags Key=lab,Value=aws-rds-multi-az
+aws rds create-db-subnet-group --db-subnet-group-name clippy-db-<handle> --db-subnet-group-description "Clippy database" --subnet-ids <ids> --tags Key=lab,Value=aws-rds-multi-az Key=student,Value=<handle>
 ```
 
-2. **Security group** `clippy-db` in the same VPC, tagged `lab = aws-rds-multi-az`, with **one** inbound rule: TCP 5432 whose source is the **security group `clippy-app`** (not a CIDR, and not `0.0.0.0/0`).
+2. **Security group** `clippy-db-<handle>` in the same VPC, tagged `lab = aws-rds-multi-az` and `student = <handle>`, with **one** inbound rule: TCP 5432 whose source is the **security group `clippy-app-<handle>`** (not a CIDR, and not `0.0.0.0/0`).
 
 > [!NOTE]
 > **Think** In production the app servers change all the time (new instances, new IPs). What does referencing a security group instead of an address buy you?
@@ -83,7 +85,7 @@ aws rds create-db-subnet-group --db-subnet-group-name clippy-db --db-subnet-grou
 
 ## Part 2 - The database
 
-Create the instance `clippy-db` with the CLI. Every option below is a decision:
+Create the instance `clippy-db-<handle>` with the CLI. Every option below is a decision:
 
 | Decision | Value |
 |----------|-------|
@@ -95,12 +97,12 @@ Create the instance `clippy-db` with the CLI. Every option below is a decision:
 | subnets / firewall | the subnet group and security group above |
 | backups | **7 days** retention |
 | master user | `clippy`, with `--manage-master-user-password` (AWS generates it and keeps it in Secrets Manager: it never appears in your shell history, your repository or this lab) |
-| tag | `lab = aws-rds-multi-az` |
+| tag | `lab = aws-rds-multi-az` and `student = <handle>` |
 
 Find the command with `aws rds create-db-instance help`. Do not put a password in any file.
 
 ```bash
-aws rds wait db-instance-available --db-instance-identifier clippy-db     # about 15 minutes
+aws rds wait db-instance-available --db-instance-identifier clippy-db-<handle>     # about 15 minutes
 ```
 
 While you wait, read about what Multi-AZ actually does: it is **synchronous replication** to a standby you cannot connect to, not a read replica.
@@ -113,7 +115,7 @@ While you wait, read about what Multi-AZ actually does: it is **synchronous repl
 ## Part 3 - Look at what you built
 
 ```bash
-aws rds describe-db-instances --db-instance-identifier clippy-db \
+aws rds describe-db-instances --db-instance-identifier clippy-db-<handle> \
   --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone,SecondaryAvailabilityZone,MultiAZ,StorageEncrypted,PubliclyAccessible,BackupRetentionPeriod,Endpoint.Address]' --output text
 python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" <the endpoint address>
 ```
@@ -127,19 +129,19 @@ Note the zone, the standby zone and the **IP address** behind the endpoint name.
 Write down the zone and the IP, then force a failover (this simulates losing the primary's data center):
 
 ```bash
-aws rds reboot-db-instance --db-instance-identifier clippy-db --force-failover
+aws rds reboot-db-instance --db-instance-identifier clippy-db-<handle> --force-failover
 ```
 
 Watch it, every ten seconds, until it is `available` again:
 
 ```bash
-while true; do date +%T; aws rds describe-db-instances --db-instance-identifier clippy-db --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone]' --output text; sleep 10; done
+while true; do date +%T; aws rds describe-db-instances --db-instance-identifier clippy-db-<handle> --query 'DBInstances[0].[DBInstanceStatus,AvailabilityZone]' --output text; sleep 10; done
 ```
 
 Then read the events and look at the endpoint again:
 
 ```bash
-aws rds describe-events --source-identifier clippy-db --source-type db-instance --duration 60 --query 'Events[].[Date,Message]' --output text
+aws rds describe-events --source-identifier clippy-db-<handle> --source-type db-instance --duration 60 --query 'Events[].[Date,Message]' --output text
 python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" <the endpoint address>
 ```
 
@@ -152,7 +154,7 @@ The **zone changed**. The **endpoint name did not**: AWS moved the name to the s
 
 ## Part 5 - Prove it
 
-<p align="center"><img src="assets/gifs/verify.gif" width="640" alt="Terminal recording: verify.sh checking the Multi-AZ database, its network rules and the forced failover, ending with ALL CHECKS PASSED 13 of 13"></p>
+<p align="center"><img src="assets/gifs/verify.gif?v=7daf695b" width="640" alt="Terminal recording: verify.sh checking the Multi-AZ database, its network rules and the forced failover, ending with ALL CHECKS PASSED 13 of 13"></p>
 
 ```bash
 ./verify.sh
@@ -170,12 +172,12 @@ It reads the real database (Multi-AZ, encrypted, private, 7 days of backups, man
 - Create a **read replica** in the other zone and compare what it does with what the Multi-AZ standby does. Which one can serve queries? Which one survives a failure of the primary without any action?
 - Take a manual **snapshot**, delete the database, and restore it into a new instance. How long did that take compared with the failover?
 - Turn on **Performance Insights** or **enhanced monitoring** and find the failover in the graphs.
-- Connect from a server that uses the `clippy-app` security group and run `psql` with the password from Secrets Manager.
+- Connect from a server that uses the `clippy-app-<handle>` security group and run `psql` with the password from Secrets Manager.
 
 <!-- teardown:start (generated by labs.py, do not edit) -->
 ## Tear down (mandatory)
 
-<p align="center"><img src="assets/gifs/teardown.gif" width="640" alt="Terminal recording: teardown.sh deleting the database, subnet group and security group, then verify-teardown.sh ending with TEARDOWN VERIFIED 5 of 5"></p>
+<p align="center"><img src="assets/gifs/teardown.gif?v=4ea83111" width="640" alt="Terminal recording: teardown.sh deleting the database, subnet group and security group, then verify-teardown.sh ending with TEARDOWN VERIFIED 5 of 5"></p>
 
 Resources left behind cost money, keep doors open and pollute the next lab. Removing what you created is part of the job, so it is part of the submission: **you must prove it is gone**.
 

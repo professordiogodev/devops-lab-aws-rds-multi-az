@@ -3,6 +3,8 @@ import json, os, re, subprocess, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 os.chdir(ROOT)
 passed = failed = 0
+H = sys.argv[1]
+DB = "clippy-db-" + H
 
 
 def check(desc, ok, hint=""):
@@ -25,8 +27,8 @@ r = subprocess.run("git grep -lEi 'AKIA[0-9A-Z]{16}|MasterUserPassword|master-us
 check("no AWS key or database password in the repository", r == "", r)
 
 print("== The database ==")
-d = (aws("rds", "describe-db-instances", "--db-instance-identifier", "clippy-db") or {}).get("DBInstances", [None])[0]
-check("a database named clippy-db exists and is available", bool(d) and d["DBInstanceStatus"] == "available", "status: %s" % (d or {}).get("DBInstanceStatus"))
+d = (aws("rds", "describe-db-instances", "--db-instance-identifier", DB) or {}).get("DBInstances", [None])[0]
+check("a database named %s exists" % DB + " and is available", bool(d) and d["DBInstanceStatus"] == "available", "status: %s" % (d or {}).get("DBInstanceStatus"))
 if not d:
     print("\nNothing else can be checked.\n%d check(s) failed, %d passed" % (failed, passed)); sys.exit(1)
 check("engine PostgreSQL, a small class (db.t3 or db.t4g) and gp3 or gp2 storage", d["Engine"] == "postgres" and re.match(r"db\.(t3|t4g)\.", d["DBInstanceClass"]) is not None and d.get("StorageType") in ("gp3", "gp2"))
@@ -35,7 +37,8 @@ check("storage is encrypted", d.get("StorageEncrypted") is True)
 check("the database is NOT publicly accessible", d.get("PubliclyAccessible") is False)
 check("automated backups are kept at least 7 days", d.get("BackupRetentionPeriod", 0) >= 7)
 check("the master password is managed by AWS (Secrets Manager), not typed by you", bool(d.get("MasterUserSecret")))
-check("tagged lab=aws-rds-multi-az", any(t["Key"] == "lab" and t["Value"] == "aws-rds-multi-az" for t in (aws("rds", "list-tags-for-resource", "--resource-name", d["DBInstanceArn"]) or {}).get("TagList", [])))
+tl = {t["Key"]: t["Value"] for t in (aws("rds", "list-tags-for-resource", "--resource-name", d["DBInstanceArn"]) or {}).get("TagList", [])}
+check("tagged lab=aws-rds-multi-az and student=%s" % H, tl.get("lab") == "aws-rds-multi-az" and tl.get("student") == H)
 sg = d.get("DBSubnetGroup", {})
 azs = {s["SubnetAvailabilityZone"]["Name"] for s in sg.get("Subnets", [])}
 check("the subnet group covers at least 2 availability zones", len(azs) >= 2, "found %s" % sorted(azs))
@@ -44,15 +47,15 @@ print("== The network around it ==")
 ids = [g["VpcSecurityGroupId"] for g in d.get("VpcSecurityGroups", [])]
 rules = (aws("ec2", "describe-security-group-rules", "--filters", "Name=group-id,Values=" + ",".join(ids)) or {}).get("SecurityGroupRules", []) if ids else []
 ing = [x for x in rules if not x["IsEgress"]]
-app = ((aws("ec2", "describe-security-groups", "--filters", "Name=group-name,Values=clippy-app") or {}).get("SecurityGroups") or [{}])[0].get("GroupId")
-check("the database accepts exactly one thing: port 5432 from the clippy-app security group",
+app = ((aws("ec2", "describe-security-groups", "--filters", "Name=group-name,Values=clippy-app-" + H) or {}).get("SecurityGroups") or [{}])[0].get("GroupId")
+check("the database accepts exactly one thing: port 5432 from the clippy-app-%s security group" % H,
       len(ing) == 1 and ing[0]["FromPort"] == 5432 and ing[0]["ToPort"] == 5432 and ing[0].get("ReferencedGroupInfo", {}).get("GroupId") == app and bool(app))
 check("nothing is open to a CIDR range (no 0.0.0.0/0, no /16)", not any(x.get("CidrIpv4") or x.get("CidrIpv6") for x in ing))
 
 print("== The failover you forced ==")
-ev = (aws("rds", "describe-events", "--source-identifier", "clippy-db", "--source-type", "db-instance", "--duration", "1440") or {}).get("Events", [])
+ev = (aws("rds", "describe-events", "--source-identifier", DB, "--source-type", "db-instance", "--duration", "1440") or {}).get("Events", [])
 msgs = " | ".join(e["Message"] for e in ev)
-check("RDS recorded a completed Multi-AZ failover for clippy-db in the last 24 hours", "Multi-AZ instance failover completed" in msgs, "run: aws rds reboot-db-instance --db-instance-identifier clippy-db --force-failover")
+check("RDS recorded a completed Multi-AZ failover for %s in the last 24 hours" % DB, "Multi-AZ instance failover completed" in msgs, "run: aws rds reboot-db-instance --db-instance-identifier %s --force-failover" % DB)
 
 print()
 print(("ALL CHECKS PASSED (%d/%d)" % (passed, passed)) if failed == 0 else ("%d check(s) failed, %d passed" % (failed, passed)))
